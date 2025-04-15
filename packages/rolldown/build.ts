@@ -26,6 +26,70 @@ const bindingFileWasiBrowser = nodePath.resolve(
   'src/rolldown-binding.wasi-browser.js',
 );
 
+const withShared = (
+  { browserBuild: isBrowserBuild, inlineDependency, ...options }: {
+    browserBuild?: boolean;
+    inlineDependency?: boolean;
+  } & BuildOptions,
+): BuildOptions => {
+  const alias = {};
+  if (isBrowserPkg) {
+    alias[bindingFile] = isBrowserBuild
+      ? bindingFileWasiBrowser
+      : bindingFileWasi;
+  }
+  if (isBrowserBuild) {
+    alias['node:path'] = 'pathe';
+  }
+
+  return {
+    input: {
+      index: './src/index',
+      ...!isBrowserBuild
+        ? {
+          cli: './src/cli/index',
+          'parallel-plugin': './src/parallel-plugin',
+          'parallel-plugin-worker': './src/parallel-plugin-worker',
+          'experimental-index': './src/experimental-index',
+          'parse-ast-index': './src/parse-ast-index',
+        }
+        : {},
+    },
+    platform: isBrowserBuild ? 'browser' : 'node',
+    resolve: {
+      extensions: ['.js', '.cjs', '.mjs', '.ts'],
+      alias,
+    },
+    external: [
+      /rolldown-binding\..*\.node/,
+      /rolldown-binding\..*\.wasm/,
+      /@rolldown\/binding-.*/,
+      /\.\/rolldown-binding\.wasi\.cjs/,
+      // some dependencies, e.g. zod, cannot be inlined because their types
+      // are used in public APIs
+      ...(inlineDependency ? [] : Object.keys(pkgJson.dependencies ?? {})),
+      bindingFileWasi,
+      bindingFileWasiBrowser,
+    ],
+    define: {
+      'import.meta.browserBuild': String(isBrowserBuild),
+    },
+    ...options,
+    plugins: [
+      isBrowserPkg && {
+        name: 'remove-built-modules',
+        resolveId(id) {
+          if (id === 'node:os' || id === 'node:worker_threads') {
+            return { id, external: true, moduleSideEffects: false };
+          }
+        },
+      },
+      patchBindingJs(),
+      options.plugins,
+    ],
+  };
+};
+
 const configs: BuildOptions[] = [
   withShared({
     plugins: [patchBindingJs()],
@@ -65,57 +129,6 @@ if (isBrowserPkg) {
   }
   copy();
 })();
-
-function withShared(
-  { browserBuild: isBrowserBuild, ...options }:
-    & { browserBuild?: boolean }
-    & BuildOptions,
-): BuildOptions {
-  return {
-    input: {
-      index: './src/index',
-      ...!isBrowserBuild
-        ? {
-          cli: './src/cli/index',
-          'parallel-plugin': './src/parallel-plugin',
-          'parallel-plugin-worker': './src/parallel-plugin-worker',
-          'experimental-index': './src/experimental-index',
-          'parse-ast-index': './src/parse-ast-index',
-        }
-        : {},
-    },
-    platform: isBrowserBuild ? 'browser' : 'node',
-    resolve: {
-      extensions: ['.js', '.cjs', '.mjs', '.ts'],
-      alias: isBrowserPkg
-        ? {
-          [bindingFile]: isBrowserBuild
-            ? bindingFileWasiBrowser
-            : bindingFileWasi,
-        }
-        : {},
-    },
-    external: [
-      /rolldown-binding\..*\.node/,
-      /rolldown-binding\..*\.wasm/,
-      /@rolldown\/binding-.*/,
-      /\.\/rolldown-binding\.wasi\.cjs/,
-      // some dependencies, e.g. zod, cannot be inlined because their types
-      // are used in public APIs
-      ...Object.keys(pkgJson.dependencies),
-      bindingFileWasi,
-      bindingFileWasiBrowser,
-    ],
-    define: {
-      'import.meta.browserBuild': String(isBrowserBuild),
-    },
-    ...options,
-    plugins: [
-      isBrowserBuild && removeBuiltModules(),
-      options.plugins,
-    ],
-  };
-}
 
 function removeBuiltModules(): Plugin {
   return {
